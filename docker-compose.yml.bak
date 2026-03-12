@@ -92,19 +92,7 @@ services:
 
       http.server.HTTPServer(('0.0.0.0', 8888), Handler).serve_forever()
       "
-telegram:
-    build: .
-    container_name: closeclaw-telegram
-    restart: unless-stopped
-    profiles: ["telegram"]
-    environment:
-      CLOSECLAW_SHARED: /shared
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
-    volumes:
-      - shared_data:/shared
-    command: python3 /app/telegram_bridge.py
-    
+
 volumes:
   shared_data:
   chrome_profile:
