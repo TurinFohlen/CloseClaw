@@ -27,6 +27,7 @@ brainstem.py — mitmproxy addon
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from threading import Lock
@@ -38,10 +39,18 @@ from mitmproxy import http
 SHARED_DIR   = Path(os.getenv("CLOSECLAW_SHARED", "/shared"))
 LATEST_FILE  = SHARED_DIR / "response_latest.txt"
 LOG_FILE     = SHARED_DIR / "response_log.jsonl"
+ALERT_FILE   = SHARED_DIR / "ALERT_disk_full.txt"
 
 # claude.ai 的 completions SSE endpoint（路径前缀匹配）
 TARGET_HOST  = "claude.ai"
 TARGET_PATH  = "/api/organizations"   # 实际路径形如 /api/organizations/<id>/chat_conversations/<id>/completion
+
+# 磁盘水位线
+DISK_WARN_MB  = 200    # 低于此值写 ALERT 文件
+DISK_STOP_MB  = 50     # 低于此值停止落盘（宁可漏，不能把系统写挂）
+
+# 日志轮转：超过此大小时 rotate（rename → .1，清空当前）
+LOG_ROTATE_MB = 50
 
 # ── 内部状态 ─────────────────────────────────────────────────────────────────
 
@@ -93,12 +102,79 @@ def _parse_sse_stream(raw: bytes) -> str:
     return result.strip()
 
 
+# ── 磁盘检查 ─────────────────────────────────────────────────────────────────
+
+def _free_mb(path: Path) -> float:
+    """返回 path 所在文件系统的剩余空间（MB）。"""
+    stat = shutil.disk_usage(path)
+    return stat.free / (1024 * 1024)
+
+
+def _check_disk(path: Path) -> bool:
+    """
+    返回 True = 可以写入。
+    低于 DISK_WARN_MB 写 ALERT 文件（不阻止写入）。
+    低于 DISK_STOP_MB 停止落盘，写 ALERT 文件。
+    """
+    free = _free_mb(path)
+
+    if free < DISK_STOP_MB:
+        msg = (f"DISK FULL: only {free:.0f}MB free on {path}. "
+               f"Brainstem stopped writing to prevent system failure.\n"
+               f"Action: free up space, then delete this file to resume.\n"
+               f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        try:
+            ALERT_FILE.write_text(msg)
+        except Exception:
+            pass  # 如果连 ALERT 都写不进去，只能 print
+        print(f"[brainstem] DISK STOP ({free:.0f}MB free) — dropping response")
+        return False
+
+    if free < DISK_WARN_MB:
+        msg = (f"DISK WARNING: {free:.0f}MB free on {path}. "
+               f"Writes continuing but space is low.\n"
+               f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        try:
+            ALERT_FILE.write_text(msg)
+        except Exception:
+            pass
+        print(f"[brainstem] DISK WARN ({free:.0f}MB free)")
+    else:
+        # 磁盘恢复正常，清掉旧 alert
+        try:
+            ALERT_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return True
+
+
+# ── 日志轮转 ──────────────────────────────────────────────────────────────────
+
+def _rotate_log_if_needed(log_file: Path) -> None:
+    """
+    超过 LOG_ROTATE_MB 时轮转：
+        response_log.jsonl   → response_log.jsonl.1（覆盖旧的）
+        response_log.jsonl   → 清空（新文件从 0 开始）
+    保留最近一个历史文件，不无限堆积。
+    """
+    if not log_file.exists():
+        return
+    size_mb = log_file.stat().st_size / (1024 * 1024)
+    if size_mb < LOG_ROTATE_MB:
+        return
+    archived = log_file.with_suffix(".jsonl.1")
+    log_file.rename(archived)
+    print(f"[brainstem] log rotated: {log_file.name} → {archived.name} ({size_mb:.0f}MB)")
+
+
 # ── 原子写文件 ────────────────────────────────────────────────────────────────
 
 def _atomic_write(path: Path, content: str) -> None:
     """
     写临时文件再 rename，保证读方永远拿到完整内容。
     rename 在同一文件系统上是原子操作（POSIX 保证）。
+    调用前必须已经通过 _check_disk()。
     """
     tmp = path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8")
@@ -109,6 +185,10 @@ def _write_response(text: str, url: str) -> None:
     global _seq
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
 
+    # 磁盘检查：在拿锁之前做，失败直接返回，不阻塞其他线程
+    if not _check_disk(SHARED_DIR):
+        return
+
     with _lock:
         _seq += 1
         seq = _seq
@@ -118,7 +198,8 @@ def _write_response(text: str, url: str) -> None:
         payload = f"seq:{seq}\n{text}"
         _atomic_write(LATEST_FILE, payload)
 
-        # response_log.jsonl（追加）
+        # response_log.jsonl（追加前检查轮转）
+        _rotate_log_if_needed(LOG_FILE)
         record = json.dumps({
             "seq": seq,
             "ts":  ts,

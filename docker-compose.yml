@@ -1,0 +1,99 @@
+services:
+
+  # ── 主机器：无头 AI 工作站 ──────────────────────────────────────────────────
+  workstation:
+    build: .
+    container_name: closeclaw
+    restart: unless-stopped          # 进程挂了 watchdog 退出 → Docker 自动重启
+
+    environment:
+      CLOSECLAW_SHARED: /shared
+      ENABLE_VNC: "${ENABLE_VNC:-0}" # 生产=0，调试时 ENABLE_VNC=1 docker compose up
+
+    volumes:
+      - shared_data:/shared           # 神经系统的共享文件系统（"体液"）
+      - chrome_profile:/app/chrome-profile  # Chrome 登录态持久化（最重要）
+      - mitmproxy_ca:/root/.mitmproxy # CA 证书持久化，重建容器不用重新信任
+      - ./logs:/app/logs              # 日志挂到宿主机，SSH 进来直接看
+
+    # VNC 端口：默认不暴露，ENABLE_VNC=1 时手动映射
+    # ports:
+    #   - "127.0.0.1:5900:5900"       # 只绑本地，不开公网
+
+    # 宿主机 SSH 进来后可以：
+    #   docker exec -it closeclaw bash
+    #   tail -f /app/logs/brainstem.log
+    #   cat /shared/response_latest.txt
+
+    healthcheck:
+      test: ["CMD", "test", "-f", "/shared/response_log.jsonl"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── 可选：轻量 Web 面板（看日志用）────────────────────────────────────────
+  panel:
+    image: python:3.11-slim
+    container_name: closeclaw-panel
+    restart: unless-stopped
+    profiles: ["panel"]              # 默认不启动，docker compose --profile panel up
+    volumes:
+      - shared_data:/shared:ro
+      - ./logs:/logs:ro
+    ports:
+      - "127.0.0.1:8888:8888"        # SSH tunnel: ssh -L 8888:localhost:8888 user@oldpc
+    command: >
+      python3 -c "
+      import http.server, json, pathlib, html, os
+
+      class Handler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              if self.path == '/':
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'text/html; charset=utf-8')
+                  self.end_headers()
+                  body = self._render()
+                  self.wfile.write(body.encode())
+              elif self.path == '/raw':
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  data = self._load_log()
+                  self.wfile.write(json.dumps(data[-50:], ensure_ascii=False).encode())
+              else:
+                  self.send_response(404); self.end_headers()
+
+          def _load_log(self):
+              p = pathlib.Path('/shared/response_log.jsonl')
+              if not p.exists(): return []
+              lines = p.read_text().strip().split('\n')
+              return [json.loads(l) for l in lines if l]
+
+          def _render(self):
+              entries = self._load_log()[-20:]
+              rows = ''
+              for e in reversed(entries):
+                  ts = e.get('ts','')
+                  seq = e.get('seq','')
+                  text = html.escape(e.get('text','')[:500])
+                  rows += f'<tr><td>{seq}</td><td>{ts:.0f}</td><td><pre>{text}</pre></td></tr>'
+              return f'''<!doctype html><html><head>
+              <meta charset=utf-8><title>CloseClaw Panel</title>
+              <meta http-equiv=refresh content=5>
+              <style>body{{font-family:monospace;background:#111;color:#0f0;padding:1em}}
+              table{{width:100%}}td{{vertical-align:top;padding:4px;border-bottom:1px solid #333}}
+              pre{{white-space:pre-wrap;margin:0}}</style></head>
+              <body><h2>CloseClaw — response log</h2>
+              <table><tr><th>seq</th><th>ts</th><th>text</th></tr>{rows}</table>
+              </body></html>'''
+
+          def log_message(self, *a): pass
+
+      http.server.HTTPServer(('0.0.0.0', 8888), Handler).serve_forever()
+      "
+
+volumes:
+  shared_data:
+  chrome_profile:
+  mitmproxy_ca:

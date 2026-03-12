@@ -151,9 +151,19 @@ def run_once() -> None:
 
     if current_seq is not None and current_seq != last_sent:
         print(f"[feedback_nerve] new seq={current_seq}, sending...", flush=True)
+
+        # ── 乐观锁：先标记已处理，再上传 ──────────────────────────────────
+        # 顺序很重要：
+        #   错误顺序（原来）：上传 → 标记
+        #     上传期间 brainstem 写入 seq:N+1
+        #     上传完标记 N → 下轮发现 N+1 → 触发第二次上传 → 重复执行
+        #   正确顺序（现在）：标记 → 上传
+        #     即使上传失败，这个 seq 也不会被重复触发
+        #     上传失败的代价：漏一次回传（可接受），而不是重复执行（不可接受）
+        _write_last_sent(current_seq)
+
         try:
             send_feedback(TEXT_FILE, IMAGE_FILE)
-            _write_last_sent(current_seq)
         except MouseLockTimeout as e:
             print(f"[feedback_nerve] lock timeout: {e}", flush=True)
         except Exception as e:
