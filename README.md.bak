@@ -91,24 +91,7 @@ docker exec -it closeclaw bash
 # 或者从宿主机写文件触发执行
 echo "seq:999\nsource:manual\ngit status" > /path/to/shared/command_output.txt
 ```
-软启动序列
 
-阶段 0  人工（一次性，永久有效）
-──────────────────────────────────────────────
-docker compose up（ENABLE_VNC=1）
-VNC 连进去，手动登录 claude.ai
-chrome-profile volume 固化登录态
-关掉 VNC，ENABLE_VNC=0 重启
-                    ↓
-阶段 1  半自动（容器重启时，chrome-profile 还在）
-──────────────────────────────────────────────
-Chrome 启动 → 自动恢复 session（cookie 在 volume）
-mitmproxy 就位 → 脑干激活
-神经脚本启动 → 等待第一条指令
-                    ↓
-阶段 2  全自动（正常工作循环）
-──────────────────────────────────────────────
-worker 收到任务 → 执行 → 反馈 → AI 继续
 ---
 
 ## 文件格式
