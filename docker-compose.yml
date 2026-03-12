@@ -1,98 +1,146 @@
+# CloseClaw — 多源 AI 工作站
+#
+# 默认启动：claude（主力）
+# 按需加源：docker compose --profile deepseek --profile qwen up -d
+#
+# 每个 worker 独立：chrome-profile / mitmproxy CA / logs
+# 共享：/shared（蒸馏数据合并，prompt 按 SOURCE 命名空间隔离）
+
+x-worker-base: &worker-base
+  build: .
+  restart: unless-stopped
+  environment:
+    CLOSECLAW_SHARED: /shared
+    ENABLE_VNC: "${ENABLE_VNC:-0}"
+  healthcheck:
+    test: ["CMD", "sh", "-c", "test -d /shared/$$CLOSECLAW_SOURCE"]
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+
 services:
 
-  # ── 主机器：无头 AI 工作站 ──────────────────────────────────────────────────
-  workstation:
-    build: .
-    container_name: closeclaw
-    restart: unless-stopped          # 进程挂了 watchdog 退出 → Docker 自动重启
-
+  # ── Claude（默认启动）────────────────────────────────────────────────────────
+  claude:
+    <<: *worker-base
+    container_name: closeclaw-claude
     environment:
       CLOSECLAW_SHARED: /shared
-      ENABLE_VNC: "${ENABLE_VNC:-0}" # 生产=0，调试时 ENABLE_VNC=1 docker compose up
-
+      CLOSECLAW_SOURCE: claude
+      CLOSECLAW_TARGET_HOST: claude.ai
+      CLOSECLAW_TARGET_PATH: /api/organizations
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
     volumes:
-      - shared_data:/shared           # 神经系统的共享文件系统（"体液"）
-      - chrome_profile:/app/chrome-profile  # Chrome 登录态持久化（最重要）
-      - mitmproxy_ca:/root/.mitmproxy # CA 证书持久化，重建容器不用重新信任
-      - ./logs:/app/logs              # 日志挂到宿主机，SSH 进来直接看
+      - shared_data:/shared
+      - chrome_profile_claude:/app/chrome-profile
+      - mitmproxy_ca_claude:/root/.mitmproxy
+      - ./logs/claude:/app/logs
 
-    # VNC 端口：默认不暴露，ENABLE_VNC=1 时手动映射
-    # ports:
-    #   - "127.0.0.1:5900:5900"       # 只绑本地，不开公网
-
-    # 宿主机 SSH 进来后可以：
-    #   docker exec -it closeclaw bash
-    #   tail -f /app/logs/brainstem.log
-    #   cat /shared/response_latest.txt
-
-    healthcheck:
-      test: ["CMD", "test", "-f", "/shared/response_log.jsonl"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-
-  # ── 可选：轻量 Web 面板（看日志用）────────────────────────────────────────
-  panel:
-    image: python:3.11-slim
-    container_name: closeclaw-panel
-    restart: unless-stopped
-    profiles: ["panel"]              # 默认不启动，docker compose --profile panel up
+  # ── DeepSeek ─────────────────────────────────────────────────────────────────
+  deepseek:
+    <<: *worker-base
+    container_name: closeclaw-deepseek
+    profiles: ["deepseek"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: deepseek
+      CLOSECLAW_TARGET_HOST: chat.deepseek.com
+      CLOSECLAW_TARGET_PATH: /api/v0
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
     volumes:
-      - shared_data:/shared:ro
-      - ./logs:/logs:ro
-    ports:
-      - "127.0.0.1:8888:8888"        # SSH tunnel: ssh -L 8888:localhost:8888 user@oldpc
-    command: >
-      python3 -c "
-      import http.server, json, pathlib, html, os
+      - shared_data:/shared
+      - chrome_profile_deepseek:/app/chrome-profile
+      - mitmproxy_ca_deepseek:/root/.mitmproxy
+      - ./logs/deepseek:/app/logs
 
-      class Handler(http.server.BaseHTTPRequestHandler):
-          def do_GET(self):
-              if self.path == '/':
-                  self.send_response(200)
-                  self.send_header('Content-Type', 'text/html; charset=utf-8')
-                  self.end_headers()
-                  body = self._render()
-                  self.wfile.write(body.encode())
-              elif self.path == '/raw':
-                  self.send_response(200)
-                  self.send_header('Content-Type', 'application/json')
-                  self.end_headers()
-                  data = self._load_log()
-                  self.wfile.write(json.dumps(data[-50:], ensure_ascii=False).encode())
-              else:
-                  self.send_response(404); self.end_headers()
+  # ── Qwen（通义千问）──────────────────────────────────────────────────────────
+  qwen:
+    <<: *worker-base
+    container_name: closeclaw-qwen
+    profiles: ["qwen"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: qwen
+      CLOSECLAW_TARGET_HOST: chat.qwen.ai
+      CLOSECLAW_TARGET_PATH: /api
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
+    volumes:
+      - shared_data:/shared
+      - chrome_profile_qwen:/app/chrome-profile
+      - mitmproxy_ca_qwen:/root/.mitmproxy
+      - ./logs/qwen:/app/logs
 
-          def _load_log(self):
-              p = pathlib.Path('/shared/response_log.jsonl')
-              if not p.exists(): return []
-              lines = p.read_text().strip().split('\n')
-              return [json.loads(l) for l in lines if l]
+  # ── Grok（xAI，llama-3.3-70b-versatile 走同一容器）─────────────────────────
+  grok:
+    <<: *worker-base
+    container_name: closeclaw-grok
+    profiles: ["grok"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: grok
+      CLOSECLAW_TARGET_HOST: grok.com
+      CLOSECLAW_TARGET_PATH: /api
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
+    volumes:
+      - shared_data:/shared
+      - chrome_profile_grok:/app/chrome-profile
+      - mitmproxy_ca_grok:/root/.mitmproxy
+      - ./logs/grok:/app/logs
 
-          def _render(self):
-              entries = self._load_log()[-20:]
-              rows = ''
-              for e in reversed(entries):
-                  ts = e.get('ts','')
-                  seq = e.get('seq','')
-                  text = html.escape(e.get('text','')[:500])
-                  rows += f'<tr><td>{seq}</td><td>{ts:.0f}</td><td><pre>{text}</pre></td></tr>'
-              return f'''<!doctype html><html><head>
-              <meta charset=utf-8><title>CloseClaw Panel</title>
-              <meta http-equiv=refresh content=5>
-              <style>body{{font-family:monospace;background:#111;color:#0f0;padding:1em}}
-              table{{width:100%}}td{{vertical-align:top;padding:4px;border-bottom:1px solid #333}}
-              pre{{white-space:pre-wrap;margin:0}}</style></head>
-              <body><h2>CloseClaw — response log</h2>
-              <table><tr><th>seq</th><th>ts</th><th>text</th></tr>{rows}</table>
-              </body></html>'''
+  # ── Groq（云推理，llama-3.3-70b-versatile）──────────────────────────────────
+  groq:
+    <<: *worker-base
+    container_name: closeclaw-groq
+    profiles: ["groq"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: groq
+      CLOSECLAW_TARGET_HOST: groq.com
+      CLOSECLAW_TARGET_PATH: /api
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
+    volumes:
+      - shared_data:/shared
+      - chrome_profile_groq:/app/chrome-profile
+      - mitmproxy_ca_groq:/root/.mitmproxy
+      - ./logs/groq:/app/logs
 
-          def log_message(self, *a): pass
+  # ── 豆包（字节）──────────────────────────────────────────────────────────────
+  doubao:
+    <<: *worker-base
+    container_name: closeclaw-doubao
+    profiles: ["doubao"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: doubao
+      CLOSECLAW_TARGET_HOST: doubao.com
+      CLOSECLAW_TARGET_PATH: /api
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
+    volumes:
+      - shared_data:/shared
+      - chrome_profile_doubao:/app/chrome-profile
+      - mitmproxy_ca_doubao:/root/.mitmproxy
+      - ./logs/doubao:/app/logs
 
-      http.server.HTTPServer(('0.0.0.0', 8888), Handler).serve_forever()
-      "
-telegram:
+  # ── Gemini ───────────────────────────────────────────────────────────────────
+  gemini:
+    <<: *worker-base
+    container_name: closeclaw-gemini
+    profiles: ["gemini"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: gemini
+      CLOSECLAW_TARGET_HOST: gemini.google.com
+      CLOSECLAW_TARGET_PATH: /app
+      ENABLE_VNC: "${ENABLE_VNC:-0}"
+    volumes:
+      - shared_data:/shared
+      - chrome_profile_gemini:/app/chrome-profile
+      - mitmproxy_ca_gemini:/root/.mitmproxy
+      - ./logs/gemini:/app/logs
+
+  # ── Telegram 远程控制 ────────────────────────────────────────────────────────
+  telegram:
     build: .
     container_name: closeclaw-telegram
     restart: unless-stopped
@@ -104,8 +152,91 @@ telegram:
     volumes:
       - shared_data:/shared
     command: python3 /app/telegram_bridge.py
-    
+
+  # ── Web 面板（聚合所有来源）──────────────────────────────────────────────────
+  panel:
+    image: python:3.11-slim
+    container_name: closeclaw-panel
+    restart: unless-stopped
+    profiles: ["panel"]
+    volumes:
+      - shared_data:/shared:ro
+      - ./logs:/logs:ro
+    ports:
+      - "127.0.0.1:8888:8888"
+    command: >
+      python3 -c "
+      import http.server, json, pathlib, html, time
+
+      class Handler(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.send_header('Content-Type', 'text/html; charset=utf-8')
+              self.end_headers()
+              self.wfile.write(self._render().encode())
+
+          def _all_entries(self, n=40):
+              entries = []
+              for f in pathlib.Path('/shared').glob('*/response_log.jsonl'):
+                  source = f.parent.name
+                  try:
+                      for line in f.read_text().strip().split('\n'):
+                          e = json.loads(line)
+                          e['_source'] = source
+                          entries.append(e)
+                  except: pass
+              return sorted(entries, key=lambda x: x.get('ts', 0), reverse=True)[:n]
+
+          def _alerts(self):
+              alerts = list(pathlib.Path('/shared').glob('*/ALERT_*.txt'))
+              return alerts
+
+          def _render(self):
+              alerts = self._alerts()
+              alert_html = ''
+              if alerts:
+                  alert_html = '<div style=\"color:#f00\">⚠️ ' + \
+                      ', '.join(f.parent.name + '/' + f.name for f in alerts) + '</div>'
+              rows = ''
+              for e in self._all_entries():
+                  src  = html.escape(e.get('_source', '?'))
+                  seq  = e.get('seq', '')
+                  ts   = time.strftime('%H:%M:%S', time.localtime(e.get('ts', 0)))
+                  text = html.escape(e.get('text', '')[:300])
+                  rows += f'<tr><td>{src}</td><td>{seq}</td><td>{ts}</td><td><pre>{text}</pre></td></tr>'
+              return (
+                  '<!doctype html><html><head><meta charset=utf-8>'
+                  '<title>CloseClaw</title><meta http-equiv=refresh content=5>'
+                  '<style>body{font:13px monospace;background:#111;color:#0f0;padding:1em}'
+                  'table{width:100%}td{vertical-align:top;padding:4px;border-bottom:1px solid #222}'
+                  'pre{white-space:pre-wrap;margin:0}</style></head><body>'
+                  '<h2>CloseClaw panel</h2>' + alert_html +
+                  '<table><tr><th>source</th><th>seq</th><th>time</th><th>text</th></tr>'
+                  + rows + '</table></body></html>'
+              )
+
+          def log_message(self, *a): pass
+
+      http.server.HTTPServer(('0.0.0.0', 8888), Handler).serve_forever()
+      "
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+# 每个 worker 独立的 chrome-profile 和 mitmproxy CA（登录态和证书不能混）
+# shared_data 共享（蒸馏数据合并，各 source 在子目录下互不干扰）
+
 volumes:
   shared_data:
-  chrome_profile:
-  mitmproxy_ca:
+  chrome_profile_claude:
+  chrome_profile_deepseek:
+  chrome_profile_qwen:
+  chrome_profile_grok:
+  chrome_profile_groq:
+  chrome_profile_doubao:
+  chrome_profile_gemini:
+  mitmproxy_ca_claude:
+  mitmproxy_ca_deepseek:
+  mitmproxy_ca_qwen:
+  mitmproxy_ca_grok:
+  mitmproxy_ca_groq:
+  mitmproxy_ca_doubao:
+  mitmproxy_ca_gemini:
