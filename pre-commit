@@ -1,0 +1,36 @@
+#!/bin/bash
+# CloseClaw pre-commit security hook
+# 安装：cp .git/hooks/pre-commit-template .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+BLOCKED_EXT=("pkl" "bin" "exe" "so" "pyc" "model" "onnx" "pt" "pth" "safetensors")
+INJECTION_PATTERNS=("ignore previous" "══ OPERATOR" "system prompt override" "新的指令" "开发者模式")
+
+# 1. 拦截二进制文件
+for ext in "${BLOCKED_EXT[@]}"; do
+    files=$(git diff --cached --name-only | grep -i "\.$ext$")
+    if [ -n "$files" ]; then
+        echo "❌ SECURITY: 禁止提交二进制文件 .$ext"
+        echo "$files"
+        exit 1
+    fi
+done
+
+# 2. 扫描文本内容是否含注入特征
+for file in $(git diff --cached --name-only | grep -E "\.(md|txt|py|yaml|yml|sh)$"); do
+    content=$(git show ":$file" 2>/dev/null)
+    for pattern in "${INJECTION_PATTERNS[@]}"; do
+        if echo "$content" | grep -qi "$pattern"; then
+            echo "❌ SECURITY: $file 含可疑内容: $pattern"
+            exit 1
+        fi
+    done
+done
+
+# 3. commit message 长度检查
+msg=$(cat "$1" 2>/dev/null || git log -1 --format=%B 2>/dev/null)
+if [ ${#msg} -gt 500 ]; then
+    echo "❌ SECURITY: commit message 过长 (${#msg} chars)，可能藏有注入内容"
+    exit 1
+fi
+
+exit 0

@@ -31,6 +31,7 @@ services:
       CLOSECLAW_TARGET_HOST: claude.ai
       CLOSECLAW_TARGET_PATH: /api/organizations
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_claude:/app/chrome-profile
@@ -48,6 +49,7 @@ services:
       CLOSECLAW_TARGET_HOST: chat.deepseek.com
       CLOSECLAW_TARGET_PATH: /api/v0
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_deepseek:/app/chrome-profile
@@ -65,6 +67,7 @@ services:
       CLOSECLAW_TARGET_HOST: chat.qwen.ai
       CLOSECLAW_TARGET_PATH: /api
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_qwen:/app/chrome-profile
@@ -82,6 +85,7 @@ services:
       CLOSECLAW_TARGET_HOST: grok.com
       CLOSECLAW_TARGET_PATH: /api
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_grok:/app/chrome-profile
@@ -99,6 +103,7 @@ services:
       CLOSECLAW_TARGET_HOST: groq.com
       CLOSECLAW_TARGET_PATH: /api
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_groq:/app/chrome-profile
@@ -116,6 +121,7 @@ services:
       CLOSECLAW_TARGET_HOST: doubao.com
       CLOSECLAW_TARGET_PATH: /api
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_doubao:/app/chrome-profile
@@ -133,6 +139,7 @@ services:
       CLOSECLAW_TARGET_HOST: gemini.google.com
       CLOSECLAW_TARGET_PATH: /app
       ENABLE_VNC: "${ENABLE_VNC:-0}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
       - chrome_profile_gemini:/app/chrome-profile
@@ -149,6 +156,7 @@ services:
       CLOSECLAW_SHARED: /shared
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID}"
+      CLOSECLAW_PROMPT_SECRET: "${CLOSECLAW_PROMPT_SECRET}"
     volumes:
       - shared_data:/shared
     command: python3 /app/telegram_bridge.py

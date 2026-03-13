@@ -5,27 +5,89 @@ motor_nerve.py — 运动神经
 轮询 /shared/{source}/response_latest.txt，
 发现新 seq 时执行 on_new_response()。
 
-同时轮询 /shared/{source}/prompt.txt（来自 telegram_bridge 或外部写入），
-有新 prompt 时注入到 AI 输入框，并同步写 prompt.txt 供 brainstem 记录。
+同时轮询 /shared/{source}/prompt.txt，
+有新 prompt 时验证签名后注入到 AI 输入框。
 
-多源：每个容器通过 CLOSECLAW_SOURCE 读自己命名空间下的文件，互不干扰。
+安全修复：
+  prompt.txt 必须带 HMAC-SHA256 签名才会被执行。
+  签名密钥来自 CLOSECLAW_PROMPT_SECRET 环境变量。
+  没有密钥或签名不匹配的 prompt 写 ALERT 并丢弃。
+  
+  这防止了：被劫持的 worker-a 直接写 worker-b 的 prompt.txt
+  注入指令——没有密钥，写了也不会被执行。
 """
 
+import hashlib
+import hmac
 import os
 import sys
 import subprocess
 import time
 from pathlib import Path
 
-SHARED_DIR    = Path(os.getenv("CLOSECLAW_SHARED", "/shared"))
-SOURCE        = os.getenv("CLOSECLAW_SOURCE", "default")
-NS_DIR        = SHARED_DIR / SOURCE
+SHARED_DIR     = Path(os.getenv("CLOSECLAW_SHARED", "/shared"))
+SOURCE         = os.getenv("CLOSECLAW_SOURCE", "default")
+NS_DIR         = SHARED_DIR / SOURCE
 
-LATEST_FILE   = NS_DIR / "response_latest.txt"
-PROMPT_FILE   = NS_DIR / "prompt.txt"           # 外部写入的待发 prompt
-PROMPT_SENT   = NS_DIR / ".prompt_sent"         # 已注入标记（乐观锁）
+LATEST_FILE    = NS_DIR / "response_latest.txt"
+PROMPT_FILE    = NS_DIR / "prompt.txt"
+PROMPT_SENT    = NS_DIR / ".prompt_sent"
 
-POLL_INTERVAL = 0.3
+# HMAC 签名密钥——只有知道这个密钥的组件才能写合法 prompt
+# 由 docker-compose 注入，worker 容器不持有此密钥
+PROMPT_SECRET  = os.getenv("CLOSECLAW_PROMPT_SECRET", "")
+
+POLL_INTERVAL  = 0.3
+
+# ── 签名验证 ──────────────────────────────────────────────────────────────────
+
+def _verify_prompt(content: str) -> tuple[bool, str]:
+    """
+    prompt.txt 格式：
+        sig:{HMAC-SHA256}\n{prompt正文}
+
+    返回 (valid, prompt文字)
+    无密钥配置时降级为警告模式（兼容旧部署）。
+    """
+    if not PROMPT_SECRET:
+        # 未配置密钥：接受但写警告
+        _write_alert("ALERT_no_prompt_secret.txt",
+                     "PROMPT_SECRET 未配置，prompt 未验证签名。"
+                     "建议设置 CLOSECLAW_PROMPT_SECRET。")
+        return True, content
+
+    lines = content.split("\n", 1)
+    if len(lines) < 2 or not lines[0].startswith("sig:"):
+        _write_alert("ALERT_unsigned_prompt.txt",
+                     f"收到无签名 prompt，已丢弃。\n内容前100字：{content[:100]}")
+        return False, ""
+
+    provided_sig = lines[0][4:].strip()
+    body         = lines[1]
+
+    expected_sig = hmac.new(
+        PROMPT_SECRET.encode(),
+        body.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(provided_sig, expected_sig):
+        _write_alert("ALERT_invalid_prompt_sig.txt",
+                     f"Prompt 签名验证失败，已丢弃。\n"
+                     f"provided={provided_sig[:16]}... "
+                     f"expected={expected_sig[:16]}...")
+        return False, ""
+
+    return True, body
+
+
+def _write_alert(name: str, msg: str) -> None:
+    try:
+        (NS_DIR / name).write_text(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{msg}\n"
+        )
+    except Exception:
+        pass
 
 
 # ── 文件读取 ──────────────────────────────────────────────────────────────────
@@ -43,26 +105,29 @@ def read_latest() -> tuple[int, str] | None:
 
 def check_pending_prompt() -> str | None:
     """
-    检查是否有待注入的 prompt（来自 telegram_bridge 或手动写文件）。
-    乐观锁：先标记已读，再注入。
+    检查是否有待注入的 prompt。
+    乐观锁 + HMAC 验证。
     """
     if not PROMPT_FILE.exists():
         return None
     sent_mtime = PROMPT_SENT.stat().st_mtime if PROMPT_SENT.exists() else 0
     if PROMPT_FILE.stat().st_mtime <= sent_mtime:
         return None
-    # 先标记（乐观锁）
-    PROMPT_SENT.touch()
-    return PROMPT_FILE.read_text(encoding="utf-8").strip()
+
+    PROMPT_SENT.touch()  # 乐观锁：先标记
+    content = PROMPT_FILE.read_text(encoding="utf-8").strip()
+
+    valid, body = _verify_prompt(content)
+    if not valid:
+        print(f"[motor_nerve/{SOURCE}] prompt rejected (invalid sig)")
+        return None
+
+    return body
 
 
 # ── 执行动作 ──────────────────────────────────────────────────────────────────
 
 def inject_prompt(text: str) -> None:
-    """
-    把 prompt 注入到 AI 网页输入框。
-    用 xclip 走剪贴板，比 xdotool type 快，适合长文本。
-    """
     proc = subprocess.Popen(
         ["xclip", "-selection", "clipboard"],
         stdin=subprocess.PIPE
@@ -72,15 +137,10 @@ def inject_prompt(text: str) -> None:
     subprocess.run(["xdotool", "key", "ctrl+v"], check=False)
     time.sleep(0.1)
     subprocess.run(["xdotool", "key", "Return"], check=False)
-    print(f"[motor_nerve/{SOURCE}] injected prompt ({len(text)} chars)")
+    print(f"[motor_nerve/{SOURCE}] injected ({len(text)} chars)")
 
 
 def on_new_response(text: str) -> None:
-    """
-    收到 AI 新回复时调用。
-    在这里接入宏引擎或自动化逻辑。
-    现在只打印，方便调试。
-    """
     print("=" * 60)
     print(text)
     print("=" * 60, flush=True)
@@ -90,16 +150,18 @@ def on_new_response(text: str) -> None:
 
 def main():
     NS_DIR.mkdir(parents=True, exist_ok=True)
-    last_seq = -1
+    if not PROMPT_SECRET:
+        print(f"[motor_nerve/{SOURCE}] WARNING: CLOSECLAW_PROMPT_SECRET not set")
+    else:
+        print(f"[motor_nerve/{SOURCE}] prompt signing enabled")
     print(f"[motor_nerve/{SOURCE}] watching {NS_DIR}")
 
+    last_seq = -1
     while True:
-        # 1. 有待注入的 prompt？
         prompt = check_pending_prompt()
         if prompt:
             inject_prompt(prompt)
 
-        # 2. 有新回复？
         result = read_latest()
         if result is not None:
             seq, text = result

@@ -14,11 +14,7 @@ AI 在机房收到，干完活把结果发回来。
     3. 写进环境变量或 /shared/telegram.env
 
 用法：
-先启动
-TELEGRAM_BOT_TOKEN=xxx TELEGRAM_CHAT_ID=yyy \
-docker compose --profile telegram up -d
-python telegram_bridge.py
-然后手机发消息就行，普通文本直接当 task，不需要加 /task 前缀。
+    python telegram_bridge.py
 
     # Telegram 里发：
     /task 帮我写一个爬虫爬取 example.com
@@ -28,6 +24,8 @@ python telegram_bridge.py
 """
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 from pathlib import Path
@@ -51,6 +49,8 @@ ALLOWED_CHAT = int(os.getenv("TELEGRAM_CHAT_ID", "0"))  # 只响应这个 chat_i
 TASK_FILE    = SHARED_DIR / "telegram_task.txt"    # 写给 motor_nerve 的指令
 RESPONSE_FILE = SHARED_DIR / "response_latest.txt"
 LOG_FILE     = SHARED_DIR / "response_log.jsonl"
+
+PROMPT_SECRET = os.getenv("CLOSECLAW_PROMPT_SECRET", "")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -96,6 +96,23 @@ def _read_log(n: int = 5) -> list[dict]:
         return []
 
 
+
+def _sign_prompt(text: str) -> str:
+    """
+    生成带 HMAC 签名的 prompt 内容。
+    格式：sig:{hex}\n{正文}
+    motor_nerve 收到后验证签名再执行。
+    """
+    if not PROMPT_SECRET:
+        return text  # 未配置密钥，降级兼容
+    sig = hmac.new(
+        PROMPT_SECRET.encode(),
+        text.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    return f"sig:{sig}\n{text}"
+
+
 def _atomic_write(path: Path, content: str) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8")
@@ -115,7 +132,7 @@ async def cmd_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     task_text = " ".join(ctx.args)
-    _atomic_write(TASK_FILE, task_text)
+    _atomic_write(TASK_FILE, _sign_prompt(task_text))
     await update.message.reply_text(f"✅ 已发送任务：\n{task_text}")
     log.info(f"Task sent: {task_text[:80]}")
 
@@ -189,7 +206,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """普通消息（非命令）直接当 task 处理，更自然"""
     text = update.message.text
-    _atomic_write(TASK_FILE, text)
+    _atomic_write(TASK_FILE, _sign_prompt(text))
     await update.message.reply_text(f"✅ 已发送：{text[:100]}")
 
 
