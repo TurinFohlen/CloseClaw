@@ -240,3 +240,46 @@ volumes:
   mitmproxy_ca_groq:
   mitmproxy_ca_doubao:
   mitmproxy_ca_gemini:
+  workspace_data:
+
+  # ── OpenRouter（数百个实验性模型）────────────────────────────────────────────
+  openrouter:
+    <<: *worker-base
+    container_name: closeclaw-openrouter
+    profiles: ["openrouter"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: "${OPENROUTER_SOURCE:-openrouter}"
+      CLOSECLAW_MODE: api
+      CLOSECLAW_API_BASE: https://openrouter.ai/api/v1
+      CLOSECLAW_API_KEY: "${OPENROUTER_API_KEY}"
+      CLOSECLAW_MODEL: "${OPENROUTER_MODEL:-mistralai/mixtral-8x7b-instruct}"
+      CLOSECLAW_MEMORY_DIR: /workspace/memory
+      CLOSECLAW_WORKSPACE: /workspace
+      ENABLE_VNC: "0"
+    volumes:
+      - shared_data:/shared
+      - workspace_data:/workspace
+    command: python3 /app/api_nerve.py
+
+  # ── SillyTavern / 本地模型（任何 OpenAI 兼容接口）────────────────────────────
+  local:
+    <<: *worker-base
+    container_name: closeclaw-local
+    profiles: ["local"]
+    environment:
+      CLOSECLAW_SHARED: /shared
+      CLOSECLAW_SOURCE: local
+      CLOSECLAW_MODE: api
+      CLOSECLAW_API_BASE: "${LOCAL_API_BASE:-http://host.docker.internal:1234/v1}"
+      CLOSECLAW_API_KEY: "${LOCAL_API_KEY:-local}"
+      CLOSECLAW_MODEL: "${LOCAL_MODEL:-local-model}"
+      CLOSECLAW_MEMORY_DIR: /workspace/memory
+      CLOSECLAW_WORKSPACE: /workspace
+      ENABLE_VNC: "0"
+    volumes:
+      - shared_data:/shared
+      - workspace_data:/workspace
+    command: python3 /app/api_nerve.py
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # 访问宿主机上的本地模型
